@@ -1,0 +1,9 @@
+# 构建产物
+dist/
+*.exe
+*.o
+nimcache/
+__pycache__/
+
+# 测试中间产物
+tests/artifacts/
